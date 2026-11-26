@@ -1,11 +1,15 @@
+using System;
+using System.Collections.Generic;
 using Amodus.Features;
 using UnityEngine;
 
 namespace Amodus.Ui;
 
 /// <summary>
-/// The Amodus window, drawn with Unity's IMGUI. Everything is drawn by hand (no GUI.Window),
-/// which keeps the code free of IL2CPP delegate conversions. <see cref="Draw"/> is called from OnGUI.
+/// The Amodus window. It is split in two on purpose:
+/// <see cref="Update"/> reads the mouse and the keyboard from Unity's Input (clicks, dragging, picking a new hotkey),
+/// <see cref="Draw"/> only draws, through <see cref="Painter"/>. Reading Input instead of IMGUI events keeps the menu
+/// away from the parts of IMGUI that Among Us does not have (Event.current and friends).
 /// </summary>
 internal static class MenuWindow
 {
@@ -15,31 +19,26 @@ internal static class MenuWindow
     public static bool IsRebinding => _rebinding != null;
 
     // ---- state ----
-    private static Vector2 _position = new Vector2(40f, 40f);
+    private static float _x = 40f;
+    private static float _y = 40f;
     private static bool _dragging;
-    private static Vector2 _dragOffset;
+    private static float _dragOffsetX;
+    private static float _dragOffsetY;
 
     private static Feature _rebinding;
     private static string _status = string.Empty;
     private static float _statusUntil;
+    private static KeyCode[] _bindableKeys;
 
     // ---- look ----
-    private static readonly Color WindowColor = new Color(0.07f, 0.08f, 0.11f, 0.96f);
-    private static readonly Color HeaderColor = new Color(0.11f, 0.13f, 0.20f, 1f);
-    private static readonly Color AccentColor = new Color(0.36f, 0.55f, 1f, 1f);
-    private static readonly Color OnColor = new Color(0.14f, 0.52f, 0.34f, 1f);
-    private static readonly Color OffColor = new Color(0.17f, 0.19f, 0.25f, 1f);
-    private static readonly Color HoverTint = new Color(1f, 1f, 1f, 0.10f);
-    private static readonly Color TextColor = new Color(0.93f, 0.95f, 1f, 1f);
-    private static readonly Color DimTextColor = new Color(0.62f, 0.67f, 0.78f, 1f);
-
-    private static GUIStyle _titleStyle;
-    private static GUIStyle _versionStyle;
-    private static GUIStyle _nameStyle;
-    private static GUIStyle _stateStyle;
-    private static GUIStyle _centerStyle;
-    private static GUIStyle _hintStyle;
-    private static GUIStyle _statusStyle;
+    // The tints are multiplied with the colours of the default IMGUI skin (see Painter).
+    private static readonly Color PanelTint = new Color(0.5f, 0.55f, 0.8f, 1f);
+    private static readonly Color HeaderTint = new Color(0.6f, 0.9f, 1.6f, 1f);
+    private static readonly Color OnTint = new Color(0.5f, 1.6f, 0.7f, 1f);
+    private static readonly Color OffTint = new Color(1f, 1f, 1f, 1f);
+    private static readonly Color AccentTint = new Color(0.7f, 1.1f, 1.7f, 1f);
+    private static readonly Color DimTextColor = new Color(0.78f, 0.82f, 0.92f, 1f);
+    private static readonly Color StatusTextColor = new Color(0.55f, 0.75f, 1f, 1f);
 
     public static void Toggle()
     {
@@ -52,137 +51,216 @@ internal static class MenuWindow
         }
     }
 
-    public static void Draw()
+    // ------------------------------------------------------------------ layout
+
+    private struct Metrics
     {
-        var e = Event.current;
-        if (!Visible || e == null)
+        public float Scale;
+        public float Width;
+        public float Height;
+        public float Pad;
+        public float HeaderH;
+        public float RowH;
+        public float Gap;
+        public float FooterH;
+    }
+
+    private static Metrics Measure()
+    {
+        // Everything is sized relative to a 1080p screen, so the menu stays usable on 1440p / 4K.
+        float s = Math.Min(Math.Max(Screen.height / 1080f, 0.8f), 2f);
+
+        var m = new Metrics
+        {
+            Scale = s,
+            Width = 340f * s,
+            Pad = 12f * s,
+            HeaderH = 40f * s,
+            RowH = 38f * s,
+            Gap = 8f * s,
+            FooterH = 50f * s,
+        };
+
+        m.Height = m.HeaderH + m.Pad + FeatureRegistry.All.Length * (m.RowH + m.Gap) + m.FooterH;
+        return m;
+    }
+
+    /// <summary>The window rectangle. The window is kept on the screen.</summary>
+    private static Rect WindowRect(Metrics m)
+    {
+        _x = Math.Min(Math.Max(_x, 0f), Math.Max(0f, Screen.width - m.Width));
+        _y = Math.Min(Math.Max(_y, 0f), Math.Max(0f, Screen.height - m.Height));
+        return new Rect(_x, _y, m.Width, m.Height);
+    }
+
+    private static Rect HeaderRect(Rect window, Metrics m)
+    {
+        return new Rect(window.x, window.y, m.Width, m.HeaderH);
+    }
+
+    private static Rect CloseRect(Rect window, Metrics m)
+    {
+        float size = m.HeaderH - 12f * m.Scale;
+        return new Rect(window.x + m.Width - m.HeaderH + 6f * m.Scale, window.y + 6f * m.Scale, size, size);
+    }
+
+    /// <summary>The two rectangles of a feature row: the big on/off button and the small "Bind" button.</summary>
+    private static void RowRects(Rect window, Metrics m, int index, out Rect main, out Rect bind)
+    {
+        float x = window.x + m.Pad;
+        float y = window.y + m.HeaderH + m.Pad + index * (m.RowH + m.Gap);
+        float width = m.Width - 2f * m.Pad;
+        float bindWidth = 56f * m.Scale;
+        float spacing = 6f * m.Scale;
+
+        main = new Rect(x, y, width - bindWidth - spacing, m.RowH);
+        bind = new Rect(x + width - bindWidth, y, bindWidth, m.RowH);
+    }
+
+    private static bool Hit(Rect r, float x, float y)
+    {
+        return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+    }
+
+    // ------------------------------------------------------------------ input
+
+    /// <summary>Called every frame from <see cref="AmodusBehaviour.Update"/>.</summary>
+    public static void Update()
+    {
+        if (!Visible)
             return;
 
-        EnsureStyles();
+        var m = Measure();
+        var window = WindowRect(m);
 
-        // Everything is sized relative to a 1080p screen, so the menu stays readable on 1440p / 4K.
-        float s = Mathf.Clamp(Screen.height / 1080f, 0.8f, 2f);
-        ApplyFontSizes(s);
+        // Unity's mouse position starts in the bottom left corner, the menu's in the top left one.
+        var mouse = Input.mousePosition;
+        float mx = mouse.x;
+        float my = Screen.height - mouse.y;
 
-        float width = 340f * s;
-        float pad = 12f * s;
-        float headerH = 40f * s;
-        float rowH = 38f * s;
-        float gap = 8f * s;
-        float footerH = 50f * s;
+        if (_rebinding != null)
+            PollKeyForBinding();
+
+        if (_dragging)
+        {
+            if (Input.GetMouseButton(0))
+            {
+                _x = mx - _dragOffsetX;
+                _y = my - _dragOffsetY;
+            }
+            else
+            {
+                _dragging = false;
+            }
+        }
+
+        bool left = Input.GetMouseButtonDown(0);
+        bool right = Input.GetMouseButtonDown(1);
+        if ((!left && !right) || !Hit(window, mx, my))
+            return;
+
+        if (left)
+        {
+            if (Hit(CloseRect(window, m), mx, my))
+            {
+                Toggle();
+                return;
+            }
+
+            // The window can be dragged by its header.
+            if (Hit(HeaderRect(window, m), mx, my))
+            {
+                _dragging = true;
+                _dragOffsetX = mx - _x;
+                _dragOffsetY = my - _y;
+                return;
+            }
+        }
 
         var features = FeatureRegistry.All;
-        float height = headerH + pad + features.Length * (rowH + gap) + footerH;
-
-        // Keep the window on the screen.
-        _position.x = Mathf.Clamp(_position.x, 0f, Mathf.Max(0f, Screen.width - width));
-        _position.y = Mathf.Clamp(_position.y, 0f, Mathf.Max(0f, Screen.height - height));
-        var window = new Rect(_position.x, _position.y, width, height);
-
-        // 1. A key pressed while we wait for a new hotkey.
-        if (_rebinding != null && e.type == EventType.KeyDown && e.keyCode != KeyCode.None)
-        {
-            OnKeyWhileBinding(e.keyCode);
-            e.Use();
-        }
-
-        // 2. Background and header.
-        Fill(window, WindowColor);
-
-        var header = new Rect(window.x, window.y, width, headerH);
-        Fill(header, HeaderColor);
-        Fill(new Rect(header.x, header.yMax - 2f * s, width, 2f * s), AccentColor);
-
-        GUI.Label(new Rect(header.x + pad, header.y, width * 0.5f, headerH), "AMODUS", _titleStyle);
-        GUI.Label(new Rect(header.x, header.y, width - headerH - 4f * s, headerH), "v" + ModInfo.Version, _versionStyle);
-
-        var closeButton = new Rect(header.xMax - headerH + 6f * s, header.y + 6f * s, headerH - 12f * s, headerH - 12f * s);
-        if (DrawButton(closeButton, "X", OffColor, _centerStyle))
-        {
-            Toggle();
-            return;
-        }
-
-        // The window can be dragged by its header.
-        HandleDrag(e, new Rect(header.x, header.y, width - headerH, headerH));
-
-        // 3. One row per feature.
-        float y = header.yMax + pad;
         for (int i = 0; i < features.Length; i++)
         {
-            DrawRow(features[i], new Rect(window.x + pad, y, width - 2f * pad, rowH), s);
-            y += rowH + gap;
-        }
+            var feature = features[i];
+            bool listening = _rebinding == feature;
+            RowRects(window, m, i, out var main, out var bind);
 
-        // 4. Hints and status line.
-        DrawFooter(new Rect(window.x + pad, y, width - 2f * pad, footerH - 4f * s));
-    }
+            if (Hit(main, mx, my))
+            {
+                // Right click: choose a new hotkey. Left click: switch the feature on / off.
+                if (right)
+                    StartBinding(feature);
+                else if (listening)
+                    _rebinding = null;
+                else
+                    feature.Toggle();
 
-    // ------------------------------------------------------------------ rows
+                return;
+            }
 
-    private static void DrawRow(Feature feature, Rect row, float s)
-    {
-        var e = Event.current;
-        bool listening = _rebinding == feature;
+            // The small "Bind" button does the same as the right click.
+            if (left && Hit(bind, mx, my))
+            {
+                if (listening)
+                    _rebinding = null;
+                else
+                    StartBinding(feature);
 
-        float bindWidth = 56f * s;
-        float spacing = 6f * s;
-        var main = new Rect(row.x, row.y, row.width - bindWidth - spacing, row.height);
-        var bind = new Rect(main.xMax + spacing, row.y, bindWidth, row.height);
-
-        // The button body: green when the feature is on.
-        Fill(main, feature.Enabled ? OnColor : OffColor);
-        if (main.Contains(e.mousePosition))
-            Fill(main, HoverTint);
-
-        // Name on the left; state and hotkey on the right.
-        GUI.Label(new Rect(main.x + 12f * s, main.y, main.width * 0.5f, main.height), feature.Title, _nameStyle);
-
-        string keyText = listening ? "press a key" : "[" + PrettyKey(feature.Hotkey.Value) + "]";
-        string state = feature.Enabled ? "ON" : "OFF";
-        GUI.Label(new Rect(main.x, main.y, main.width - 12f * s, main.height), state + "   " + keyText, _stateStyle);
-
-        // Right click on the button: choose a new hotkey. This must come before GUI.Button,
-        // because GUI.Button also reacts to the right mouse button.
-        if (e.type == EventType.MouseDown && e.button == 1 && main.Contains(e.mousePosition))
-        {
-            StartBinding(feature);
-            e.Use();
-        }
-
-        // Left click on the button: switch the feature on / off.
-        if (GUI.Button(main, string.Empty, GUIStyle.none) && Event.current.button == 0)
-        {
-            if (listening)
-                _rebinding = null;
-            else
-                feature.Toggle();
-        }
-
-        // The small "Bind" button does the same as the right click.
-        if (DrawButton(bind, listening ? "..." : "Bind", listening ? AccentColor : OffColor, _centerStyle))
-        {
-            if (listening)
-                _rebinding = null;
-            else
-                StartBinding(feature);
+                return;
+            }
         }
     }
 
-    private static void DrawFooter(Rect area)
+    // ------------------------------------------------------------------ drawing
+
+    /// <summary>Called from OnGUI. Draws the window; does nothing while the menu is hidden.</summary>
+    public static void Draw()
     {
+        if (!Visible)
+            return;
+
+        var m = Measure();
+        var window = WindowRect(m);
+        var features = FeatureRegistry.All;
+
+        Painter.Box(window, string.Empty, PanelTint);
+        Painter.Box(HeaderRect(window, m), "AMODUS   v" + ModInfo.Version, HeaderTint);
+        Painter.Box(CloseRect(window, m), "X", OffTint);
+
+        for (int i = 0; i < features.Length; i++)
+        {
+            var feature = features[i];
+            bool listening = _rebinding == feature;
+            RowRects(window, m, i, out var main, out var bind);
+
+            // The hotkey is written on the button itself.
+            string key = listening ? "press a key" : "[" + PrettyKey(feature.Hotkey.Value) + "]";
+            string state = feature.Enabled ? "ON" : "OFF";
+            Painter.Box(main, feature.Title + "     " + state + "     " + key, feature.Enabled ? OnTint : OffTint);
+            Painter.Box(bind, listening ? "..." : "Bind", listening ? AccentTint : OffTint);
+        }
+
+        DrawFooter(window, m, features.Length);
+    }
+
+    private static void DrawFooter(Rect window, Metrics m, int rows)
+    {
+        float x = window.x + m.Pad;
+        float y = window.y + m.HeaderH + m.Pad + rows * (m.RowH + m.Gap);
+        float width = m.Width - 2f * m.Pad;
+        float half = (m.FooterH - 4f * m.Scale) * 0.5f;
+
         string first;
-        var firstStyle = _hintStyle;
+        var firstColor = DimTextColor;
 
         if (_rebinding != null)
         {
             first = "Press a key for " + _rebinding.Title + "...";
-            firstStyle = _statusStyle;
+            firstColor = StatusTextColor;
         }
         else if (Time.unscaledTime < _statusUntil)
         {
             first = _status;
-            firstStyle = _statusStyle;
+            firstColor = StatusTextColor;
         }
         else
         {
@@ -193,9 +271,8 @@ internal static class MenuWindow
             ? "Esc: cancel    Backspace: no hotkey"
             : PrettyKey(AmodusPlugin.MenuKey.Value) + ": hide the menu";
 
-        float half = area.height * 0.5f;
-        GUI.Label(new Rect(area.x, area.y, area.width, half), first, firstStyle);
-        GUI.Label(new Rect(area.x, area.y + half, area.width, half), second, _hintStyle);
+        Painter.Label(new Rect(x, y, width, half), first, firstColor);
+        Painter.Label(new Rect(x, y + half, width, half), second, DimTextColor);
     }
 
     // ------------------------------------------------------------ rebinding
@@ -204,6 +281,39 @@ internal static class MenuWindow
     {
         _rebinding = feature;
         _statusUntil = 0f;
+    }
+
+    /// <summary>Looks for a key that was pressed this frame while the menu waits for a new hotkey.</summary>
+    private static void PollKeyForBinding()
+    {
+        if (_bindableKeys == null)
+            _bindableKeys = ListBindableKeys();
+
+        for (int i = 0; i < _bindableKeys.Length; i++)
+        {
+            if (Input.GetKeyDown(_bindableKeys[i]))
+            {
+                OnKeyWhileBinding(_bindableKeys[i]);
+                return;
+            }
+        }
+    }
+
+    // Every keyboard key; mouse buttons and gamepad buttons are not offered as hotkeys.
+    private static KeyCode[] ListBindableKeys()
+    {
+        var keys = new List<KeyCode>();
+
+        foreach (KeyCode key in Enum.GetValues(typeof(KeyCode)))
+        {
+            string name = key.ToString();
+            if (key == KeyCode.None || name.StartsWith("Mouse") || name.StartsWith("Joystick"))
+                continue;
+
+            keys.Add(key);
+        }
+
+        return keys.ToArray();
     }
 
     private static void OnKeyWhileBinding(KeyCode key)
@@ -286,87 +396,5 @@ internal static class MenuWindow
                     return "Num" + name.Substring(6);
                 return name;
         }
-    }
-
-    // -------------------------------------------------------------- dragging
-
-    private static void HandleDrag(Event e, Rect dragArea)
-    {
-        if (e.type == EventType.MouseDown && e.button == 0 && dragArea.Contains(e.mousePosition))
-        {
-            _dragging = true;
-            _dragOffset = e.mousePosition - _position;
-            e.Use();
-        }
-        else if (e.type == EventType.MouseDrag && _dragging)
-        {
-            _position = e.mousePosition - _dragOffset;
-            e.Use();
-        }
-        else if (e.rawType == EventType.MouseUp)
-        {
-            _dragging = false;
-        }
-    }
-
-    // --------------------------------------------------------------- drawing
-
-    /// <summary>A flat button with a hover effect. Returns true when it was clicked with the left mouse button.</summary>
-    private static bool DrawButton(Rect rect, string text, Color fill, GUIStyle style)
-    {
-        Fill(rect, fill);
-        if (rect.Contains(Event.current.mousePosition))
-            Fill(rect, HoverTint);
-
-        bool clicked = GUI.Button(rect, text, style);
-        return clicked && Event.current.button == 0;
-    }
-
-    /// <summary>Draws a filled rectangle.</summary>
-    private static void Fill(Rect rect, Color color)
-    {
-        var previous = GUI.color;
-        GUI.color = color;
-        GUI.DrawTexture(rect, Texture2D.whiteTexture);
-        GUI.color = previous;
-    }
-
-    private static void EnsureStyles()
-    {
-        // GUI.skin can only be used inside OnGUI, so the styles are created on the first draw.
-        if (_titleStyle != null)
-            return;
-
-        _titleStyle = MakeStyle(TextAnchor.MiddleLeft, FontStyle.Bold, TextColor);
-        _versionStyle = MakeStyle(TextAnchor.MiddleRight, FontStyle.Normal, DimTextColor);
-        _nameStyle = MakeStyle(TextAnchor.MiddleLeft, FontStyle.Bold, TextColor);
-        _stateStyle = MakeStyle(TextAnchor.MiddleRight, FontStyle.Normal, TextColor);
-        _centerStyle = MakeStyle(TextAnchor.MiddleCenter, FontStyle.Bold, TextColor);
-        _hintStyle = MakeStyle(TextAnchor.MiddleLeft, FontStyle.Normal, DimTextColor);
-        _statusStyle = MakeStyle(TextAnchor.MiddleLeft, FontStyle.Bold, AccentColor);
-    }
-
-    private static GUIStyle MakeStyle(TextAnchor alignment, FontStyle fontStyle, Color color)
-    {
-        var style = new GUIStyle(GUI.skin.label);
-        style.alignment = alignment;
-        style.fontStyle = fontStyle;
-        style.wordWrap = false;
-        style.normal.textColor = color;
-        style.hover.textColor = color;
-        style.active.textColor = color;
-        style.focused.textColor = color;
-        return style;
-    }
-
-    private static void ApplyFontSizes(float s)
-    {
-        _titleStyle.fontSize = Mathf.RoundToInt(18f * s);
-        _versionStyle.fontSize = Mathf.RoundToInt(12f * s);
-        _nameStyle.fontSize = Mathf.RoundToInt(15f * s);
-        _stateStyle.fontSize = Mathf.RoundToInt(13f * s);
-        _centerStyle.fontSize = Mathf.RoundToInt(13f * s);
-        _hintStyle.fontSize = Mathf.RoundToInt(12f * s);
-        _statusStyle.fontSize = Mathf.RoundToInt(12f * s);
     }
 }

@@ -22,6 +22,16 @@ public class AmodusBehaviour : MonoBehaviour
         {
             Hotkeys.Tick();
 
+            // A problem in the menu must not stop the features from running.
+            try
+            {
+                MenuWindow.Update();
+            }
+            catch (Exception e)
+            {
+                ErrorOnce.Log("MenuWindow.Update", e);
+            }
+
             var features = FeatureRegistry.All;
             for (int i = 0; i < features.Length; i++)
                 features[i].OnUpdate();
