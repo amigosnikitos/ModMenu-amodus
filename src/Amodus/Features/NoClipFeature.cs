@@ -4,7 +4,10 @@ namespace Amodus.Features;
 
 /// <summary>
 /// Walk through walls. Walls only stop the player because the player has a physics collider,
-/// so while the feature is on the collider of the local player is switched off.
+/// so while the feature is on, the collider of the local player is switched off.
+/// It is the collider the game keeps in <c>PlayerControl.Collider</c>, and it is switched off on every
+/// physics step right after the game has updated the player (see <see cref="Patches.PlayerControlPatches"/>),
+/// so the game cannot switch it back on before the physics engine looks at it.
 /// </summary>
 internal sealed class NoClipFeature : Feature
 {
@@ -14,27 +17,23 @@ internal sealed class NoClipFeature : Feature
 
     public override KeyCode DefaultKey => KeyCode.F1;
 
-    // The game may switch the collider back on (meetings, vents...), so it is forced off every frame
-    // and also right before every physics step.
-    public override void OnUpdate() => Apply();
-
-    public override void OnFixedUpdate() => Apply();
-
-    protected override void OnDisabled() => SetColliderEnabled(true);
-
-    private void Apply()
+    /// <summary>Called right after the game has updated a player (every physics step, for every player).</summary>
+    public void OnPlayerFixedUpdate(PlayerControl player)
     {
-        if (Enabled)
-            SetColliderEnabled(false);
+        if (!Enabled || player == null || !player.AmOwner)
+            return;
+
+        SetColliderEnabled(player, false);
     }
 
-    private static void SetColliderEnabled(bool value)
+    protected override void OnDisabled() => SetColliderEnabled(PlayerControl.LocalPlayer, true);
+
+    private static void SetColliderEnabled(PlayerControl player, bool value)
     {
-        var player = PlayerControl.LocalPlayer;
         if (player == null)
             return;
 
-        var collider = player.GetComponent<Collider2D>();
+        var collider = player.Collider;
         if (collider != null && collider.enabled != value)
             collider.enabled = value;
     }
