@@ -1,0 +1,20 @@
+# Build output
+bin/
+obj/
+dist/
+*.zip
+
+# IDE
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+
+# Never commit game files or BepInEx - they are not ours to redistribute.
+BepInEx/
+interop/
+libs/
+*.dll
+winhttp.dll
+doorstop_config.ini

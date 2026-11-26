@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>Amodus</AssemblyName>
+    <RootNamespace>Amodus</RootNamespace>
+    <Product>Amodus</Product>
+    <Description>In-game mod menu for Among Us (BepInEx IL2CPP)</Description>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+
+    <!-- BepInEx IL2CPP runs on .NET 6. Newer SDKs only print a warning that net6.0 is out of support. -->
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <NoWarn>$(NoWarn);NETSDK1138</NoWarn>
+
+    <!-- Where NuGet finds the game libraries and BepInEx (same list as in NuGet.config). -->
+    <RestoreAdditionalProjectSources>https://api.nuget.org/v3/index.json;https://nuget.bepinex.dev/v3/index.json;https://nuget.samboy.dev/v3/index.json</RestoreAdditionalProjectSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Game libraries. The version is the Among Us version they were generated from.
+         When the game updates, change it to the new game version. -->
+    <PackageReference Include="AmongUs.GameLibs.Steam" Version="2026.9.29" PrivateAssets="all" />
+
+    <!-- BepInEx. The plugin is compiled against build 735 and runs on 735 or newer. -->
+    <PackageReference Include="BepInEx.IL2CPP.MSBuild" Version="2.1.0-rc.1" PrivateAssets="all" />
+    <PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.735" />
+  </ItemGroup>
+
+</Project>

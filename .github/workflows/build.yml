@@ -1,0 +1,53 @@
+name: Build
+
+# Builds the plugin on every push and pull request.
+# Pushing a tag like v0.1.0 also publishes a GitHub Release with the ready-to-install zip.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write # lets the job attach files to a GitHub Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build
+        run: dotnet build src/Amodus/Amodus.csproj -c Release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF_NAME } else { 'dev-' + $env:GITHUB_SHA.Substring(0, 7) }
+          New-Item -ItemType Directory -Force -Path dist/BepInEx/plugins | Out-Null
+          Copy-Item src/Amodus/bin/Release/net6.0/Amodus.dll dist/BepInEx/plugins/
+          Compress-Archive -Path dist/BepInEx -DestinationPath "Amodus-$version.zip" -Force
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ZIP_NAME=Amodus-$version.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Amodus-${{ env.VERSION }}
+          path: dist
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP_NAME }}
+            src/Amodus/bin/Release/net6.0/Amodus.dll
+          generate_release_notes: true
