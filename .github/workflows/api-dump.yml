@@ -1,0 +1,32 @@
+name: ApiDump
+
+# Throwaway workflow: prints the names and signatures of some game types, so the mod is written against the real API.
+on:
+  push:
+    branches: [api-dump]
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore the game libraries
+        run: dotnet restore src/Amodus/Amodus.csproj
+
+      - name: Dump the API
+        shell: pwsh
+        run: |
+          $asm = Get-ChildItem "$env:USERPROFILE\.nuget\packages\amongus.gamelibs.steam" -Recurse -Filter Assembly-CSharp.dll | Select-Object -First 1
+          $dir = $asm.DirectoryName
+          Write-Host "LIBS: $dir"
+          dotnet run --project tools/ApiDump -c Release -- $dir `
+            t:AmongUsClient t:InnerNetClient t:GameCode t:ClipboardHelper t:ChatController t:PlayerControl `
+            t:NetworkedPlayerInfo t:PlayerPhysics t:CosmeticsLayer t:HudManager t:LobbyBehaviour t:GameStartManager `
+            t:DisconnectPopup t:GUIUtility t:GUI t:Texture2D t:Input `
+            g:Disconnect g:ExitGame g:Clipboard g:CopyBuffer g:LeaveGame g:GameName
