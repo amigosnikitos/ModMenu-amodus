@@ -19,28 +19,13 @@ jobs:
       - name: Restore the game libraries
         run: dotnet restore src/Amodus/Amodus.csproj
 
-      - name: Package layout
-        shell: pwsh
-        run: |
-          $root = "$env:USERPROFILE\.nuget\packages\amongus.gamelibs.steam"
-          Get-ChildItem $root -Recurse -Directory | ForEach-Object { "DIR " + $_.FullName }
-          Get-ChildItem $root -Recurse -File | Where-Object { $_.Name -in @('Assembly-CSharp.dll','UnityEngine.IMGUIModule.dll','UnityEngine.CoreModule.dll') -or $_.Extension -in @('.props','.targets','.nuspec') } | ForEach-Object { "FILE " + $_.FullName + "  " + $_.Length }
-          Get-ChildItem $root -Recurse -Include *.props,*.targets | ForEach-Object { "---- " + $_.FullName; Get-Content $_.FullName }
-
-      - name: Which assemblies the build compiles against
-        shell: pwsh
-        run: |
-          dotnet build src/Amodus/Amodus.csproj -c Release -v:detailed 2>&1 | Select-String -Pattern "IMGUIModule|Assembly-CSharp.dll" | Select-Object -First 12 | ForEach-Object { "REF " + $_.Line.Trim() }
-
       - name: Build the dump tool
         run: dotnet build tools/ApiDump -c Release
 
       - name: Dump the API
         shell: pwsh
         run: |
-          $dirs = Get-ChildItem "$env:USERPROFILE\.nuget\packages\amongus.gamelibs.steam" -Recurse -Filter UnityEngine.IMGUIModule.dll | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique
-          foreach ($d in $dirs) {
-            Write-Host "#### DIR $d"
-            dotnet run --no-build --project tools/ApiDump -c Release -- $d `
-              t:GUI t:GUIContent t:GUIStyle t:GUISkin t:Matrix4x4 t:NetworkModes t:DisconnectReasons t:ScaleMode t:Event t:Screen
-          }
+          $d = (Get-ChildItem "$env:USERPROFILE\.nuget\packages\amongus.gamelibs.steam" -Recurse -Filter UnityEngine.IMGUIModule.dll | Select-Object -First 1).DirectoryName
+          Write-Host "#### DIR $d"
+          dotnet run --no-build --project tools/ApiDump -c Release -- $d `
+            t:GUIStyleState t:RectOffset t:EventType t:TextAnchor t:FontStyle t:TextClipping t:Texture t:GUIUtility
