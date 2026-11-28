@@ -15,6 +15,8 @@ internal sealed class NoClipFeature : Feature
 
     public override string Title => "Noclip";
 
+    public override string Description => "Walk through walls";
+
     public override KeyCode DefaultKey => KeyCode.F1;
 
     /// <summary>Called right after the game has updated a player (every physics step, for every player).</summary>

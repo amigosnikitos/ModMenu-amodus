@@ -18,12 +18,16 @@ internal static class Hotkeys
     /// <summary>Called every frame from <see cref="AmodusBehaviour.Update"/>.</summary>
     public static void Tick()
     {
+        // While the menu waits for a new key, no hotkey may fire (and the menu key is just one more key to pick).
+        if (MenuWindow.IsRebinding)
+            return;
+
         var menuKey = AmodusPlugin.MenuKey.Value;
         if (menuKey != KeyCode.None && Input.GetKeyDown(menuKey))
             MenuWindow.Toggle();
 
-        // While the menu waits for a new key, no hotkey may fire.
-        if (MenuWindow.IsRebinding || Time.frameCount <= _suppressUntilFrame)
+        // The key that was just picked in the menu must not also fire.
+        if (Time.frameCount <= _suppressUntilFrame)
             return;
 
         var features = FeatureRegistry.All;

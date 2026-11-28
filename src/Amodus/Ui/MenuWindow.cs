@@ -6,39 +6,80 @@ using UnityEngine;
 namespace Amodus.Ui;
 
 /// <summary>
-/// The Amodus window. It is split in two on purpose:
-/// <see cref="Update"/> reads the mouse and the keyboard from Unity's Input (clicks, dragging, picking a new hotkey),
-/// <see cref="Draw"/> only draws, through <see cref="Painter"/>. Reading Input instead of IMGUI events keeps the menu
-/// away from the parts of IMGUI that Among Us does not have (Event.current and friends).
+/// The Amodus window: a dark, flat window with a title bar, tabs on the left and one row per feature on the right.
+/// It is split in two on purpose: <see cref="Update"/> reads the mouse and the keyboard from Unity's Input
+/// (clicks, dragging, picking a new hotkey), <see cref="Draw"/> only draws, through <see cref="Painter"/>.
+/// All sizes are in "layout units"; <see cref="Scale"/> turns them into pixels.
 /// </summary>
 internal static class MenuWindow
 {
     public static bool Visible { get; private set; }
 
-    /// <summary>True while the menu waits for the player to press a new hotkey.</summary>
-    public static bool IsRebinding => _rebinding != null;
+    /// <summary>True while the menu waits for the player to press a new key.</summary>
+    public static bool IsRebinding => _rebindFeature != null || _rebindMenuKey;
+
+    // ---- size ----
+    private const float BaseScale = 1.25f;      // layout unit -> pixels on a 1080p screen, at the normal menu size
+    private const float WindowWidth = 560f;
+    private const float TitleHeight = 34f;
+    private const float FooterHeight = 26f;
+    private const float SidebarWidth = 132f;
+    private const float Pad = 10f;
+    private const float RowHeight = 50f;
+    private const float RowGap = 6f;
+    private const float TabHeight = 34f;
+    private const float TabGap = 2f;
+    private const float ChipWidth = 66f;
+    private const float ChipHeight = 24f;
+    private const int MinRows = 5;
+
+    private const float TitleFont = 17f;
+    private const float BodyFont = 15f;
+    private const float SmallFont = 12.5f;
+    private const float ChipFont = 13f;
+
+    private const string SettingsTab = "Settings";
+    private const int SettingsRows = 2;         // "Interface size" and "Menu key"
+
+    // ---- colours ----
+    private static readonly Color Panel = Rgb(0.067f, 0.067f, 0.078f);
+    private static readonly Color TitleBar = Rgb(0.043f, 0.043f, 0.051f);
+    private static readonly Color Sidebar = Rgb(0.055f, 0.055f, 0.065f);
+    private static readonly Color SidebarHover = Rgb(0.082f, 0.082f, 0.097f);
+    private static readonly Color Row = Rgb(0.105f, 0.105f, 0.122f);
+    private static readonly Color RowHover = Rgb(0.135f, 0.135f, 0.157f);
+    private static readonly Color Chip = Rgb(0.17f, 0.17f, 0.2f);
+    private static readonly Color ChipHover = Rgb(0.23f, 0.23f, 0.27f);
+    private static readonly Color TrackOff = Rgb(0.22f, 0.22f, 0.26f);
+    private static readonly Color KnobOff = Rgb(0.62f, 0.62f, 0.68f);
+    private static readonly Color Accent = Rgb(0.58f, 0.43f, 1f);
+    private static readonly Color CloseHover = Rgb(0.78f, 0.22f, 0.27f);
+    private static readonly Color White = Rgb(1f, 1f, 1f);
+    private static readonly Color TextBright = Rgb(0.95f, 0.95f, 0.97f);
+    private static readonly Color TextMid = Rgb(0.78f, 0.78f, 0.84f);
+    private static readonly Color TextDim = Rgb(0.56f, 0.56f, 0.64f);
 
     // ---- state ----
-    private static float _x = 40f;
-    private static float _y = 40f;
-    private static bool _dragging;
-    private static float _dragOffsetX;
-    private static float _dragOffsetY;
+    private static bool _built;
+    private static string[] _tabs;
+    private static Feature[][] _tabFeatures;
+    private static float _height;
+    private static int _tab;
 
-    private static Feature _rebinding;
+    private static bool _placed;
+    private static float _x;
+    private static float _y;
+    private static bool _dragging;
+    private static float _dragDx;
+    private static float _dragDy;
+    private static float _mx = -10000f;
+    private static float _my = -10000f;
+
+    private static Feature _rebindFeature;
+    private static bool _rebindMenuKey;
     private static string _status = string.Empty;
     private static float _statusUntil;
     private static KeyCode[] _bindableKeys;
-
-    // ---- look ----
-    // The tints are multiplied with the colours of the default IMGUI skin (see Painter).
-    private static readonly Color PanelTint = new Color(0.5f, 0.55f, 0.8f, 1f);
-    private static readonly Color HeaderTint = new Color(0.6f, 0.9f, 1.6f, 1f);
-    private static readonly Color OnTint = new Color(0.5f, 1.6f, 0.7f, 1f);
-    private static readonly Color OffTint = new Color(1f, 1f, 1f, 1f);
-    private static readonly Color AccentTint = new Color(0.7f, 1.1f, 1.7f, 1f);
-    private static readonly Color DimTextColor = new Color(0.78f, 0.82f, 0.92f, 1f);
-    private static readonly Color StatusTextColor = new Color(0.55f, 0.75f, 1f, 1f);
 
     public static void Toggle()
     {
@@ -46,76 +87,123 @@ internal static class MenuWindow
 
         if (!Visible)
         {
-            _rebinding = null;
+            CancelBinding();
             _dragging = false;
         }
     }
 
+    private static Color Rgb(float r, float g, float b)
+    {
+        return new Color(r, g, b, 1f);
+    }
+
     // ------------------------------------------------------------------ layout
 
-    private struct Metrics
+    /// <summary>Layout units to pixels. Follows the screen height, so the menu looks the same on 1080p, 1440p and 4K.</summary>
+    private static float Scale()
     {
-        public float Scale;
-        public float Width;
-        public float Height;
-        public float Pad;
-        public float HeaderH;
-        public float RowH;
-        public float Gap;
-        public float FooterH;
+        float s = Screen.height / 1080f;
+        if (s < 0.5f)
+            s = 0.5f;
+        else if (s > 3f)
+            s = 3f;
+
+        return s * BaseScale * AmodusPlugin.UiScale.Value;
     }
 
-    private static Metrics Measure()
+    /// <summary>Groups the features into tabs and works out the height of the window. Done once.</summary>
+    private static void Build()
     {
-        // Everything is sized relative to a 1080p screen, so the menu stays usable on 1440p / 4K.
-        float s = Math.Min(Math.Max(Screen.height / 1080f, 0.8f), 2f);
+        if (_built)
+            return;
 
-        var m = new Metrics
+        _built = true;
+
+        var names = new List<string>();
+        foreach (var feature in FeatureRegistry.All)
         {
-            Scale = s,
-            Width = 340f * s,
-            Pad = 12f * s,
-            HeaderH = 40f * s,
-            RowH = 38f * s,
-            Gap = 8f * s,
-            FooterH = 50f * s,
-        };
+            if (!names.Contains(feature.Category))
+                names.Add(feature.Category);
+        }
 
-        m.Height = m.HeaderH + m.Pad + FeatureRegistry.All.Length * (m.RowH + m.Gap) + m.FooterH;
-        return m;
+        if (!names.Contains(SettingsTab))
+            names.Add(SettingsTab);
+
+        _tabs = names.ToArray();
+        _tabFeatures = new Feature[_tabs.Length][];
+
+        int rows = MinRows;
+        for (int i = 0; i < _tabs.Length; i++)
+        {
+            var list = new List<Feature>();
+            foreach (var feature in FeatureRegistry.All)
+            {
+                if (feature.Category == _tabs[i])
+                    list.Add(feature);
+            }
+
+            _tabFeatures[i] = list.ToArray();
+
+            int count = list.Count + (_tabs[i] == SettingsTab ? SettingsRows : 0);
+            if (count > rows)
+                rows = count;
+        }
+
+        // The window is as high as its fullest tab (but never lower than MinRows rows).
+        _height = TitleHeight + 1f + Pad + rows * RowHeight + (rows - 1) * RowGap + Pad + FooterHeight;
     }
 
-    /// <summary>The window rectangle. The window is kept on the screen.</summary>
-    private static Rect WindowRect(Metrics m)
+    /// <summary>Puts the window in the middle of the screen the first time, and keeps it on the screen after that.</summary>
+    private static void KeepOnScreen(float scale)
     {
-        _x = Math.Min(Math.Max(_x, 0f), Math.Max(0f, Screen.width - m.Width));
-        _y = Math.Min(Math.Max(_y, 0f), Math.Max(0f, Screen.height - m.Height));
-        return new Rect(_x, _y, m.Width, m.Height);
+        float maxX = Math.Max(0f, Screen.width / scale - WindowWidth);
+        float maxY = Math.Max(0f, Screen.height / scale - _height);
+
+        if (!_placed)
+        {
+            _x = maxX * 0.5f;
+            _y = maxY * 0.5f;
+            _placed = true;
+        }
+
+        _x = Math.Min(Math.Max(_x, 0f), maxX);
+        _y = Math.Min(Math.Max(_y, 0f), maxY);
     }
 
-    private static Rect HeaderRect(Rect window, Metrics m)
+    private static Rect WindowRect() => new Rect(_x, _y, WindowWidth, _height);
+
+    private static Rect TitleRect(Rect w) => new Rect(w.x, w.y, WindowWidth, TitleHeight);
+
+    private static Rect CloseRect(Rect w) => new Rect(w.x + WindowWidth - TitleHeight, w.y, TitleHeight, TitleHeight);
+
+    private static float BodyTop(Rect w) => w.y + TitleHeight + 1f + Pad;
+
+    private static Rect TabRect(Rect w, int index)
     {
-        return new Rect(window.x, window.y, m.Width, m.HeaderH);
+        return new Rect(w.x, BodyTop(w) + index * (TabHeight + TabGap), SidebarWidth, TabHeight);
     }
 
-    private static Rect CloseRect(Rect window, Metrics m)
+    private static Rect RowRect(Rect w, int index)
     {
-        float size = m.HeaderH - 12f * m.Scale;
-        return new Rect(window.x + m.Width - m.HeaderH + 6f * m.Scale, window.y + 6f * m.Scale, size, size);
+        return new Rect(w.x + SidebarWidth + Pad, BodyTop(w) + index * (RowHeight + RowGap), WindowWidth - SidebarWidth - 2f * Pad, RowHeight);
     }
 
-    /// <summary>The two rectangles of a feature row: the big on/off button and the small "Bind" button.</summary>
-    private static void RowRects(Rect window, Metrics m, int index, out Rect main, out Rect bind)
+    private static Rect ChipRect(Rect row)
     {
-        float x = window.x + m.Pad;
-        float y = window.y + m.HeaderH + m.Pad + index * (m.RowH + m.Gap);
-        float width = m.Width - 2f * m.Pad;
-        float bindWidth = 56f * m.Scale;
-        float spacing = 6f * m.Scale;
-
-        main = new Rect(x, y, width - bindWidth - spacing, m.RowH);
-        bind = new Rect(x + width - bindWidth, y, bindWidth, m.RowH);
+        return new Rect(row.x + row.width - ChipWidth - 12f, row.y + (RowHeight - ChipHeight) * 0.5f, ChipWidth, ChipHeight);
     }
+
+    private static Rect SwitchRect(Rect row)
+    {
+        return new Rect(row.x + 14f, row.y + (RowHeight - 18f) * 0.5f, 34f, 18f);
+    }
+
+    // The three small controls of the "Interface size" row: [-] 100% [+]
+    private static Rect PlusRect(Rect row) => new Rect(row.x + row.width - 12f - 28f, row.y + (RowHeight - ChipHeight) * 0.5f, 28f, ChipHeight);
+
+    private static Rect ValueRect(Rect row) => new Rect(row.x + row.width - 12f - 28f - 4f - 52f, row.y + (RowHeight - ChipHeight) * 0.5f, 52f, ChipHeight);
+
+    private static Rect MinusRect(Rect row) => new Rect(row.x + row.width - 12f - 28f - 4f - 52f - 4f - 28f, row.y + (RowHeight - ChipHeight) * 0.5f, 28f, ChipHeight);
 
     private static bool Hit(Rect r, float x, float y)
     {
@@ -130,23 +218,25 @@ internal static class MenuWindow
         if (!Visible)
             return;
 
-        var m = Measure();
-        var window = WindowRect(m);
+        Build();
+        float s = Scale();
+        KeepOnScreen(s);
 
         // Unity's mouse position starts in the bottom left corner, the menu's in the top left one.
         var mouse = Input.mousePosition;
-        float mx = mouse.x;
-        float my = Screen.height - mouse.y;
+        _mx = mouse.x / s;
+        _my = (Screen.height - mouse.y) / s;
 
-        if (_rebinding != null)
+        if (IsRebinding)
             PollKeyForBinding();
 
         if (_dragging)
         {
             if (Input.GetMouseButton(0))
             {
-                _x = mx - _dragOffsetX;
-                _y = my - _dragOffsetY;
+                _x = _mx - _dragDx;
+                _y = _my - _dragDy;
+                KeepOnScreen(s);
             }
             else
             {
@@ -156,58 +246,107 @@ internal static class MenuWindow
 
         bool left = Input.GetMouseButtonDown(0);
         bool right = Input.GetMouseButtonDown(1);
-        if ((!left && !right) || !Hit(window, mx, my))
+        if (!left && !right)
+            return;
+
+        var window = WindowRect();
+        if (!Hit(window, _mx, _my))
             return;
 
         if (left)
         {
-            if (Hit(CloseRect(window, m), mx, my))
+            if (Hit(CloseRect(window), _mx, _my))
             {
                 Toggle();
                 return;
             }
 
-            // The window can be dragged by its header.
-            if (Hit(HeaderRect(window, m), mx, my))
+            // The window can be dragged by its title bar.
+            if (Hit(TitleRect(window), _mx, _my))
             {
                 _dragging = true;
-                _dragOffsetX = mx - _x;
-                _dragOffsetY = my - _y;
+                _dragDx = _mx - _x;
+                _dragDy = _my - _y;
                 return;
+            }
+
+            for (int i = 0; i < _tabs.Length; i++)
+            {
+                if (Hit(TabRect(window, i), _mx, _my))
+                {
+                    _tab = i;
+                    CancelBinding();
+                    return;
+                }
             }
         }
 
-        var features = FeatureRegistry.All;
+        ClickRows(window, left, right);
+    }
+
+    private static void ClickRows(Rect window, bool left, bool right)
+    {
+        var features = _tabFeatures[_tab];
+
         for (int i = 0; i < features.Length; i++)
         {
+            var row = RowRect(window, i);
+            if (!Hit(row, _mx, _my))
+                continue;
+
             var feature = features[i];
-            bool listening = _rebinding == feature;
-            RowRects(window, m, i, out var main, out var bind);
+            bool onKey = Hit(ChipRect(row), _mx, _my);
 
-            if (Hit(main, mx, my))
+            if (right || (left && onKey))
             {
-                // Right click: choose a new hotkey. Left click: switch the feature on / off.
-                if (right)
-                    StartBinding(feature);
-                else if (listening)
-                    _rebinding = null;
-                else
-                    feature.Toggle();
-
-                return;
-            }
-
-            // The small "Bind" button does the same as the right click.
-            if (left && Hit(bind, mx, my))
-            {
-                if (listening)
-                    _rebinding = null;
+                // Right click on the row, or a click on the key: choose a new hotkey.
+                if (_rebindFeature == feature)
+                    CancelBinding();
                 else
                     StartBinding(feature);
-
-                return;
             }
+            else if (IsRebinding)
+            {
+                CancelBinding();
+            }
+            else
+            {
+                feature.Toggle();
+            }
+
+            return;
         }
+
+        if (_tabs[_tab] != SettingsTab)
+            return;
+
+        // The built-in rows of the Settings tab come after the features of that tab.
+        var sizeRow = RowRect(window, features.Length);
+        if (left && Hit(sizeRow, _mx, _my))
+        {
+            if (Hit(MinusRect(sizeRow), _mx, _my))
+                ChangeScale(-0.1f);
+            else if (Hit(PlusRect(sizeRow), _mx, _my))
+                ChangeScale(0.1f);
+
+            return;
+        }
+
+        var keyRow = RowRect(window, features.Length + 1);
+        if ((left || right) && Hit(keyRow, _mx, _my))
+        {
+            if (_rebindMenuKey)
+                CancelBinding();
+            else
+                StartMenuKeyBinding();
+        }
+    }
+
+    private static void ChangeScale(float delta)
+    {
+        float value = (float)Math.Round((AmodusPlugin.UiScale.Value + delta) * 10f) / 10f;
+        value = Math.Min(Math.Max(value, 0.6f), 2f);
+        AmodusPlugin.UiScale.Value = value;
     }
 
     // ------------------------------------------------------------------ drawing
@@ -218,72 +357,182 @@ internal static class MenuWindow
         if (!Visible)
             return;
 
-        var m = Measure();
-        var window = WindowRect(m);
-        var features = FeatureRegistry.All;
+        Build();
+        Painter.Begin(Scale());
 
-        Painter.Box(window, string.Empty, PanelTint);
-        Painter.Box(HeaderRect(window, m), "AMODUS   v" + ModInfo.Version, HeaderTint);
-        Painter.Box(CloseRect(window, m), "X", OffTint);
-
-        for (int i = 0; i < features.Length; i++)
+        try
         {
-            var feature = features[i];
-            bool listening = _rebinding == feature;
-            RowRects(window, m, i, out var main, out var bind);
-
-            // The hotkey is written on the button itself.
-            string key = listening ? "press a key" : "[" + PrettyKey(feature.Hotkey.Value) + "]";
-            string state = feature.Enabled ? "ON" : "OFF";
-            Painter.Box(main, feature.Title + "     " + state + "     " + key, feature.Enabled ? OnTint : OffTint);
-            Painter.Box(bind, listening ? "..." : "Bind", listening ? AccentTint : OffTint);
+            DrawWindow();
         }
-
-        DrawFooter(window, m, features.Length);
+        finally
+        {
+            Painter.End();
+        }
     }
 
-    private static void DrawFooter(Rect window, Metrics m, int rows)
+    private static void DrawWindow()
     {
-        float x = window.x + m.Pad;
-        float y = window.y + m.HeaderH + m.Pad + rows * (m.RowH + m.Gap);
-        float width = m.Width - 2f * m.Pad;
-        float half = (m.FooterH - 4f * m.Scale) * 0.5f;
+        var w = WindowRect();
 
-        string first;
-        var firstColor = DimTextColor;
+        // background, title bar, a thin accent line under it, sidebar, footer
+        Painter.Fill(w, Panel);
+        Painter.Fill(TitleRect(w), TitleBar);
+        Painter.Fill(new Rect(w.x, w.y + TitleHeight, WindowWidth, 1f), Accent);
+        Painter.Fill(new Rect(w.x, w.y + TitleHeight + 1f, SidebarWidth, _height - TitleHeight - 1f - FooterHeight), Sidebar);
+        Painter.Fill(new Rect(w.x, w.y + _height - FooterHeight, WindowWidth, FooterHeight), TitleBar);
 
-        if (_rebinding != null)
+        Painter.Text(new Rect(w.x + 14f, w.y, 90f, TitleHeight), "AMODUS", Accent, TitleFont, Painter.Align.Left);
+        Painter.Text(new Rect(w.x + 102f, w.y + 2f, 120f, TitleHeight), "v" + ModInfo.Version, TextDim, SmallFont, Painter.Align.Left);
+
+        var close = CloseRect(w);
+        bool closeHover = Hit(close, _mx, _my);
+        if (closeHover)
+            Painter.Fill(close, CloseHover);
+
+        Painter.Text(close, "X", closeHover ? White : TextDim, BodyFont, Painter.Align.Center);
+
+        DrawTabs(w);
+        DrawRows(w);
+        DrawFooter(w);
+    }
+
+    private static void DrawTabs(Rect w)
+    {
+        for (int i = 0; i < _tabs.Length; i++)
         {
-            first = "Press a key for " + _rebinding.Title + "...";
-            firstColor = StatusTextColor;
+            var r = TabRect(w, i);
+            bool selected = i == _tab;
+
+            if (selected)
+            {
+                Painter.Fill(r, Row);
+                Painter.Fill(new Rect(r.x, r.y, 3f, r.height), Accent);
+            }
+            else if (Hit(r, _mx, _my))
+            {
+                Painter.Fill(r, SidebarHover);
+            }
+
+            Painter.Text(new Rect(r.x + 16f, r.y, r.width - 20f, r.height), _tabs[i], selected ? TextBright : TextDim, BodyFont, Painter.Align.Left);
+        }
+    }
+
+    private static void DrawRows(Rect w)
+    {
+        var features = _tabFeatures[_tab];
+
+        for (int i = 0; i < features.Length; i++)
+            DrawFeatureRow(RowRect(w, i), features[i]);
+
+        if (_tabs[_tab] == SettingsTab)
+        {
+            DrawSizeRow(RowRect(w, features.Length));
+            DrawMenuKeyRow(RowRect(w, features.Length + 1));
+        }
+    }
+
+    private static void DrawFeatureRow(Rect row, Feature feature)
+    {
+        Painter.Fill(row, Hit(row, _mx, _my) ? RowHover : Row);
+        DrawSwitch(SwitchRect(row), feature.Enabled);
+
+        float textX = row.x + 62f;
+        float textWidth = row.width - 62f - ChipWidth - 24f;
+        Painter.Text(new Rect(textX, row.y + 5f, textWidth, 22f), feature.Title, feature.Enabled ? TextBright : TextMid, BodyFont, Painter.Align.Left);
+        Painter.Text(new Rect(textX, row.y + 27f, textWidth, 18f), feature.Description, TextDim, SmallFont, Painter.Align.Left);
+
+        bool listening = _rebindFeature == feature;
+        DrawChip(ChipRect(row), listening ? "..." : PrettyKey(feature.Hotkey.Value), listening);
+    }
+
+    private static void DrawSizeRow(Rect row)
+    {
+        Painter.Fill(row, Hit(row, _mx, _my) ? RowHover : Row);
+
+        Painter.Text(new Rect(row.x + 16f, row.y + 5f, row.width - 160f, 22f), "Interface size", TextBright, BodyFont, Painter.Align.Left);
+        Painter.Text(new Rect(row.x + 16f, row.y + 27f, row.width - 160f, 18f), "Size of this menu", TextDim, SmallFont, Painter.Align.Left);
+
+        DrawChip(MinusRect(row), "-", false);
+        Painter.Text(ValueRect(row), Math.Round(AmodusPlugin.UiScale.Value * 100f) + "%", TextBright, ChipFont, Painter.Align.Center);
+        DrawChip(PlusRect(row), "+", false);
+    }
+
+    private static void DrawMenuKeyRow(Rect row)
+    {
+        Painter.Fill(row, Hit(row, _mx, _my) ? RowHover : Row);
+
+        Painter.Text(new Rect(row.x + 16f, row.y + 5f, row.width - 120f, 22f), "Menu key", TextBright, BodyFont, Painter.Align.Left);
+        Painter.Text(new Rect(row.x + 16f, row.y + 27f, row.width - 120f, 18f), "Shows and hides this menu", TextDim, SmallFont, Painter.Align.Left);
+
+        DrawChip(ChipRect(row), _rebindMenuKey ? "..." : PrettyKey(AmodusPlugin.MenuKey.Value), _rebindMenuKey);
+    }
+
+    private static void DrawSwitch(Rect track, bool on)
+    {
+        Painter.Fill(track, on ? Accent : TrackOff);
+
+        float knob = track.height - 6f;
+        float x = on ? track.x + track.width - knob - 3f : track.x + 3f;
+        Painter.Fill(new Rect(x, track.y + 3f, knob, knob), on ? White : KnobOff);
+    }
+
+    private static void DrawChip(Rect r, string text, bool active)
+    {
+        Painter.Fill(r, active ? Accent : (Hit(r, _mx, _my) ? ChipHover : Chip));
+        Painter.Text(r, text, active ? White : TextMid, ChipFont, Painter.Align.Center);
+    }
+
+    private static void DrawFooter(Rect w)
+    {
+        string text;
+        var color = TextDim;
+
+        if (_rebindFeature != null)
+        {
+            text = "Press a key for " + _rebindFeature.Title + "     Esc: cancel     Backspace: no key";
+            color = Accent;
+        }
+        else if (_rebindMenuKey)
+        {
+            text = "Press the new key for the menu     Esc: cancel";
+            color = Accent;
         }
         else if (Time.unscaledTime < _statusUntil)
         {
-            first = _status;
-            firstColor = StatusTextColor;
+            text = _status;
+            color = Accent;
         }
         else
         {
-            first = "Click: on/off    Right-click / Bind: set key";
+            text = "Click a row: on / off     Right-click a row or click its key: change the key";
         }
 
-        string second = _rebinding != null
-            ? "Esc: cancel    Backspace: no hotkey"
-            : PrettyKey(AmodusPlugin.MenuKey.Value) + ": hide the menu";
-
-        Painter.Label(new Rect(x, y, width, half), first, firstColor);
-        Painter.Label(new Rect(x, y + half, width, half), second, DimTextColor);
+        Painter.Text(new Rect(w.x + 14f, w.y + _height - FooterHeight, WindowWidth - 28f, FooterHeight), text, color, SmallFont, Painter.Align.Left);
     }
 
     // ------------------------------------------------------------ rebinding
 
     private static void StartBinding(Feature feature)
     {
-        _rebinding = feature;
+        _rebindFeature = feature;
+        _rebindMenuKey = false;
         _statusUntil = 0f;
     }
 
-    /// <summary>Looks for a key that was pressed this frame while the menu waits for a new hotkey.</summary>
+    private static void StartMenuKeyBinding()
+    {
+        _rebindFeature = null;
+        _rebindMenuKey = true;
+        _statusUntil = 0f;
+    }
+
+    private static void CancelBinding()
+    {
+        _rebindFeature = null;
+        _rebindMenuKey = false;
+    }
+
+    /// <summary>Looks for a key that was pressed this frame while the menu waits for a new key.</summary>
     private static void PollKeyForBinding()
     {
         if (_bindableKeys == null)
@@ -318,13 +567,36 @@ internal static class MenuWindow
 
     private static void OnKeyWhileBinding(KeyCode key)
     {
-        var feature = _rebinding;
-
         if (key == KeyCode.Escape)
         {
-            _rebinding = null;
+            CancelBinding();
             return;
         }
+
+        var feature = _rebindFeature;
+
+        if (_rebindMenuKey)
+        {
+            if (key == KeyCode.Backspace)
+            {
+                SetStatus("The menu needs a key");
+                return;
+            }
+
+            var owner = FeatureWithHotkey(key, null);
+            if (owner != null)
+            {
+                SetStatus(PrettyKey(key) + " is used by " + owner.Title);
+                return;
+            }
+
+            AmodusPlugin.MenuKey.Value = key;
+            FinishBinding("Menu key: " + PrettyKey(key));
+            return;
+        }
+
+        if (feature == null)
+            return;
 
         if (key == KeyCode.Backspace)
         {
@@ -340,23 +612,32 @@ internal static class MenuWindow
             return;
         }
 
-        var all = FeatureRegistry.All;
-        for (int i = 0; i < all.Length; i++)
+        var other = FeatureWithHotkey(key, feature);
+        if (other != null)
         {
-            if (all[i] != feature && all[i].Hotkey.Value == key)
-            {
-                SetStatus(PrettyKey(key) + " is used by " + all[i].Title);
-                return;
-            }
+            SetStatus(PrettyKey(key) + " is used by " + other.Title);
+            return;
         }
 
         feature.Hotkey.Value = key;
         FinishBinding(feature.Title + ": " + PrettyKey(key));
     }
 
+    private static Feature FeatureWithHotkey(KeyCode key, Feature except)
+    {
+        var all = FeatureRegistry.All;
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (all[i] != except && all[i].Hotkey.Value == key)
+                return all[i];
+        }
+
+        return null;
+    }
+
     private static void FinishBinding(string message)
     {
-        _rebinding = null;
+        CancelBinding();
         SetStatus(message);
 
         // The key that was just pressed must not also switch a feature.

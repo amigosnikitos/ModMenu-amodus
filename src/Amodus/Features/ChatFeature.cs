@@ -13,28 +13,13 @@ internal sealed class ChatFeature : Feature
 
     public override string Title => "Chat";
 
+    public override string Category => "Chat";
+
+    public override string Description => "Keep the chat open during the round";
+
     public override KeyCode DefaultKey => KeyCode.F2;
 
-    protected override void OnEnabled() => SetChatVisible(true);
+    protected override void OnEnabled() => ChatVisibility.Refresh();
 
-    protected override void OnDisabled() => SetChatVisible(VanillaShowsChat());
-
-    private static void SetChatVisible(bool visible)
-    {
-        var hud = HudManager.Instance;
-        if (hud == null || hud.Chat == null)
-            return;
-
-        hud.Chat.SetVisible(visible);
-    }
-
-    // What the unmodded game would do right now: chat in the lobby and in meetings, and for dead players.
-    private static bool VanillaShowsChat()
-    {
-        if (LobbyBehaviour.Instance != null || MeetingHud.Instance != null)
-            return true;
-
-        var me = PlayerControl.LocalPlayer;
-        return me != null && me.Data != null && me.Data.IsDead;
-    }
+    protected override void OnDisabled() => ChatVisibility.Refresh();
 }
